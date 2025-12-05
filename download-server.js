@@ -1,7 +1,7 @@
 // 🚫 Node18 embedded fetch 관련 충돌 방지
 process.env.NODE_NO_HTTP_FETCH = "1";
 
-// 🚧 undici가 참조하는 Web API mock
+// undici가 참조하는 Web API mock
 if (!global.File) global.File = class {};
 if (!global.Blob) global.Blob = class {};
 
