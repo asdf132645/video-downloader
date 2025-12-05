@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <title>Video Downloader (Network Sniffer)</title>
+    <style>
+        body {
+            padding: 24px;
+            font-family: system-ui;
+            background: #f4f5f7;
+        }
+        .wrap {
+            width: 1100px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #fff;
+            border-radius: 14px;
+            box-shadow: 0 2px 14px rgba(0,0,0,0.08);
+        }
+        h2 {
+            margin-top: 0;
+            margin-bottom: 12px;
+        }
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .toolbar input {
+            flex: 1;
+            padding: 9px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            font-size: 14px;
+        }
+        .btn {
+            padding: 10px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+        .btn-primary {
+            background: #2a2e9d;
+            color: #fff;
+        }
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: default;
+        }
+        .webview-wrap {
+            margin-top: 10px;
+            margin-bottom: 14px;
+        }
+        webview {
+            width: 100%;
+            height: 480px;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .controls-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 8px;
+            margin-bottom: 4px;
+        }
+        select {
+            font-size: 13px;
+            padding: 6px;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+        }
+        .status {
+            font-size: 12px;
+            color: #555;
+            margin-top: 2px;
+        }
+        .progress-wrap {
+            margin-top: 10px;
+        }
+        .progress-text {
+            margin-bottom: 4px;
+            font-size: 12px;
+            color: #444;
+        }
+        .progress-base {
+            width: 100%;
+            height: 8px;
+            border-radius: 8px;
+            background: #ddd;
+        }
+        .progress-bar {
+            width: 0%;
+            height: 8px;
+            border-radius: 8px;
+            background: #2a2e9d;
+            transition: 0.2s;
+        }
+        pre {
+            background: #fafafa;
+            border: 1px solid #ddd;
+            padding: 10px;
+            white-space: pre-wrap;
+            border-radius: 8px;
+            margin-top: 12px;
+            font-size: 13px;
+            height: 200px;
+            overflow-y: auto;
+        }
+        .hidden {
+            display: none;
+        }
+        .media-select-label {
+            font-size: 12px;
+            color: #444;
+        }
+    </style>
+</head>
+
+<body>
+<div class="wrap">
+    <h2>Video Downloader (Network Sniffer)</h2>
+
+    <!-- 🔹 상단 주소 입력 + 이동 버튼 -->
+    <div class="toolbar">
+        <input id="address" type="text"
+               placeholder="이동할 주소 입력 (예: https://ydtour23.com)" />
+        <button class="btn btn-secondary" id="go-btn">이동</button>
+    </div>
+
+    <!-- 🔹 webview -->
+    <div class="webview-wrap">
+        <webview
+                id="browser"
+                src="https://www.google.com"
+                allowpopups
+        ></webview>
+    </div>
+
+    <!-- 🔹 다운로드 컨트롤 -->
+    <div class="controls-row">
+        <select id="mode">
+            <option value="auto">auto (추천)</option>
+            <option value="direct">direct만</option>
+            <option value="ytdlp">yt-dlp 강제</option>
+        </select>
+
+        <!-- 🔥 파일명 입력창 추가 -->
+        <input
+                id="file-name"
+                type="text"
+                placeholder="저장할 파일명 (확장자 제외)"
+                style="width:200px;padding:7px;border-radius:6px;border:1px solid #ddd"
+        />
+        <!-- 감지된 미디어 URL 선택 -->
+        <div style="flex: 1; display: flex; flex-direction: column; gap: 2px;">
+            <span class="media-select-label">감지된 미디어 URL</span>
+            <select id="media-select" class="hidden"></select>
+        </div>
+
+        <button class="btn btn-primary" id="download-btn" disabled>
+            선택한 미디어 다운로드
+        </button>
+    </div>
+
+    <div class="status" id="status">
+        webview에서 재생되는 동영상/스트림 네트워크를 감지합니다.
+    </div>
+
+    <!-- 🔹 진행률 Progress UI -->
+    <div class="progress-wrap">
+        <div class="progress-text" id="progress-text">0%</div>
+        <div class="progress-base">
+            <div class="progress-bar" id="progress-bar"></div>
+        </div>
+    </div>
+
+    <!-- 🔹 로그 출력 영역 -->
+    <pre id="log"></pre>
+</div>
+
+<script>
+    const { ipcRenderer } = require("electron");
+
+    let currentPageUrl = null;
+    /** @type {{url:string, resourceType:string}[]} */
+    let mediaList = [];
+
+    function normalizeUrl(input) {
+        if (!input) return "";
+        if (/^https?:\/\//i.test(input)) return input;
+        return "https://" + input;
+    }
+
+    function appendLog(el, text) {
+        const now = new Date();
+        const ts = now.toISOString().replace("T", " ").slice(0, 19);
+        el.textContent = `[${ts}] ${text}\n\n` + el.textContent;
+    }
+
+    function truncateUrl(url, max = 80) {
+        if (!url) return "";
+        if (url.length <= max) return url;
+        return url.slice(0, max - 3) + "...";
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+        const webview = document.getElementById("browser");
+        const address = document.getElementById("address");
+        const goBtn = document.getElementById("go-btn");
+        const downloadBtn = document.getElementById("download-btn");
+        const modeSel = document.getElementById("mode");
+        const mediaSelect = document.getElementById("media-select");
+        const statusEl = document.getElementById("status");
+        const logEl = document.getElementById("log");
+        const progressBar = document.getElementById("progress-bar");
+        const progressText = document.getElementById("progress-text");
+
+        /* ===========================
+              🔥 SSE Progress
+        =========================== */
+        const evtSource = new EventSource("http://localhost:3000/api/progress");
+        evtSource.onmessage = (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                const pct = Number(data.pct || 0);
+                const size = data.size || "";
+                progressBar.style.width = pct + "%";
+                progressText.textContent =
+                    pct + "% " + (size ? `(${size})` : "");
+            } catch (err) {
+                console.error("SSE parse error:", err);
+            }
+        };
+
+        /* ===========================
+              🔥 주소창 이동
+        =========================== */
+        goBtn.addEventListener("click", () => {
+            const raw = address.value.trim();
+            const url = normalizeUrl(raw);
+            if (!url) return;
+            webview.loadURL(url);
+        });
+
+        address.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                goBtn.click();
+            }
+        });
+
+        /* ===========================
+              🔥 webview 등록 (네트워크 훅)
+        =========================== */
+        webview.addEventListener("did-attach", () => {
+            const wcId = webview.getWebContentsId();
+            if (wcId) {
+                ipcRenderer.send("register-webview", wcId);
+            }
+        });
+
+        /* ===========================
+              🔥 webview URL 변경 감지
+        =========================== */
+        function handleNavigate(e) {
+            const url = e.url;
+            currentPageUrl = url;
+            address.value = url;
+
+            // 페이지 바뀔 때마다 감지 목록 리셋
+            mediaList = [];
+            renderMediaList();
+            statusEl.textContent =
+                "페이지 로딩 중... 네트워크에서 미디어를 감지하면 여기에 표시됩니다.";
+
+            appendLog(logEl, `[NAVIGATE] ${url}`);
+        }
+
+        webview.addEventListener("did-navigate", handleNavigate);
+        webview.addEventListener("did-navigate-in-page", handleNavigate);
+
+        /* ===========================
+              🔥 main → renderer : 미디어 감지 이벤트
+        =========================== */
+        ipcRenderer.on("media-detected", (event, payload) => {
+            const { url, resourceType } = payload || {};
+            if (!url) return;
+
+            // 중복 제거
+            if (mediaList.find((m) => m.url === url)) return;
+
+            mediaList.push({ url, resourceType: resourceType || "" });
+            renderMediaList();
+
+            statusEl.textContent =
+                `🎬 미디어 감지됨 (총 ${mediaList.length}개)`;
+            appendLog(
+                logEl,
+                `[MEDIA] ${resourceType || "unknown"}\n${url}`
+            );
+        });
+
+        /* ===========================
+              🔥 감지된 미디어 리스트 렌더링
+        =========================== */
+        function renderMediaList() {
+            mediaSelect.innerHTML = "";
+
+            if (!mediaList.length) {
+                mediaSelect.classList.add("hidden");
+                downloadBtn.disabled = true;
+                return;
+            }
+
+            mediaList.forEach((item, idx) => {
+                const opt = document.createElement("option");
+                opt.value = item.url;
+                opt.textContent = `${idx + 1}. ${truncateUrl(item.url, 100)}`;
+                mediaSelect.appendChild(opt);
+            });
+
+            mediaSelect.classList.remove("hidden");
+            downloadBtn.disabled = false;
+        }
+
+        /* ===========================
+              🔥 선택한 미디어 다운로드
+        =========================== */
+        downloadBtn.addEventListener("click", async () => {
+            if (!mediaList.length) return;
+
+            const targetUrl =
+                mediaSelect.value || mediaList[0].url;
+            const mode = modeSel.value;
+
+            // 🔥 새로 추가된 파일명 입력값
+            const customName = document.getElementById("file-name").value.trim();
+
+            downloadBtn.disabled = true;
+            const originalText = downloadBtn.textContent;
+            downloadBtn.textContent = "다운로드 중...";
+
+            progressBar.style.width = "0%";
+            progressText.textContent = "0%";
+
+            appendLog(
+                logEl,
+                `POST /api/download\n` +
+                `URL: ${targetUrl}\n` +
+                `fileName:${customName}\n` +
+                `mode: ${mode}\n` +
+                `referer: ${currentPageUrl || targetUrl}\n`
+            );
+
+            try {
+                const resp = await fetch("http://localhost:3000/api/download", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        url: targetUrl,
+                        fileName: customName,
+                        mode,
+                        referer: currentPageUrl || targetUrl,
+                    }),
+                });
+
+                const data = await resp.json();
+                const logText = data.log || JSON.stringify(data, null, 2);
+
+                appendLog(
+                    logEl,
+                    `=== /api/download 응답 ===\n${logText}\n`
+                );
+            } catch (err) {
+                appendLog(logEl, "❌ 요청 실패: " + err);
+            } finally {
+                downloadBtn.disabled = false;
+                downloadBtn.textContent = originalText;
+            }
+        });
+    });
+</script>
+
+</body>
+</html>

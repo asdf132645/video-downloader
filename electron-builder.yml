@@ -1,0 +1,31 @@
+appId: com.legit.downloader
+productName: VideoDownloader
+
+directories:
+  output: dist
+
+asar: true
+
+asarUnpack:
+  - download-server.js
+  - htmlParser.js
+  - yt-dlp.exe
+  - index.html
+
+extraResources:
+  - from: ./node_modules
+    to: ./node_modules
+  - from: ./download-server.js
+    to: .
+  - from: ./htmlParser.js
+    to: .
+  - from: ./yt-dlp.exe
+    to: .
+  - from: ./index.html
+    to: .
+
+
+win:
+  target: nsis
+  forceCodeSigning: false
+  signAndEditExecutable: false
