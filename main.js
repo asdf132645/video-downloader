@@ -6,14 +6,31 @@ const fs = require("fs");
 
 let serverProcess = null;
 
-// 개발/배포 모드 경로 결정
-function resolveBasePath() {
-    return app.isPackaged ? process.resourcesPath : __dirname;
+/** ================================
+ * 🔥 공통 경로 처리
+ * ================================= */
+function getIndexHtmlPath() {
+    return app.isPackaged
+        ? path.join(process.resourcesPath, "app", "index.html")
+        : path.join(__dirname, "index.html");
 }
 
-// 네트워크 요청에서 영상 URL 판별
-const MEDIA_EXT_RE =
-    /\.(mp4|webm|mov|mkv|m4v|mp3|m4a|ogg|wav|ts|m3u8|mpd)(\?|$)/i;
+function getServerPath() {
+    return app.isPackaged
+        ? path.join(process.resourcesPath, "app", "download-server.js")
+        : path.join(__dirname, "download-server.js");
+}
+
+function getNodeModulesPath() {
+    return app.isPackaged
+        ? path.join(process.resourcesPath, "node_modules")
+        : path.join(process.cwd(), "node_modules");
+}
+
+/** ================================
+ * 🔍 미디어 판별
+ * ================================= */
+const MEDIA_EXT_RE = /\.(mp4|webm|mov|mkv|m4v|mp3|m4a|ogg|wav|ts|m3u8|mpd)(\?|$)/i;
 
 function isMediaUrl(url, resourceType) {
     if (!url) return false;
@@ -23,7 +40,17 @@ function isMediaUrl(url, resourceType) {
     return false;
 }
 
+/** ================================
+ * 🪟 BrowserWindow
+ * ================================= */
 function createWindow() {
+    const indexPath = getIndexHtmlPath();
+
+    console.log("\n========================");
+    console.log("🔥 INDEX PATH:", indexPath);
+    console.log("📁 EXISTS?", fs.existsSync(indexPath));
+    console.log("========================\n");
+
     const win = new BrowserWindow({
         width: 1200,
         height: 800,
@@ -31,113 +58,116 @@ function createWindow() {
             nodeIntegration: true,
             contextIsolation: false,
             webviewTag: true,
+            webSecurity: false,
         },
     });
 
-    const indexPath = path.join(process.resourcesPath, "app", "index.html");
-
-    console.log("🚀 INDEX PATH:", indexPath);
-    console.log("📁 EXISTS?", fs.existsSync(indexPath));
+    if (!fs.existsSync(indexPath)) {
+        win.loadURL("data:text/html,<h1>index.html not found</h1>");
+        return;
+    }
 
     win.loadFile(indexPath);
     win.webContents.openDevTools();
 }
 
-// ⚡ 서버 실행
+/** ================================
+ * 🚀 서버 실행(download-server.js)
+ * ================================= */
 function startDownloadServer() {
-    const basePath = resolveBasePath();
+    const serverPath = getServerPath();
 
-    // 🔥 download-server.js는 반드시 app 폴더 아래에 있어야 한다
-    const serverPath = path.join(process.resourcesPath, "app", "download-server.js");
+    const cwdPath = app.isPackaged
+        ? process.resourcesPath
+        : process.cwd(); // dev = 프로젝트 루트
+
+    const nodeModulesPath = getNodeModulesPath();
     const downloadDir = app.getPath("downloads");
 
     console.log("\n========================");
     console.log("🚀 Launching Server");
-    console.log("process.execPath :", process.execPath);
-    console.log("serverPath       :", serverPath);
-    console.log("EXISTS?          :", fs.existsSync(serverPath));
+    console.log("✔ process.execPath :", process.execPath);
+    console.log("✔ serverPath       :", serverPath);
+    console.log("✔ EXISTS?          :", fs.existsSync(serverPath));
+    console.log("✔ CWD              :", cwdPath);
+    console.log("✔ node_modules     :", nodeModulesPath);
     console.log("========================\n");
 
+    if (!fs.existsSync(serverPath)) {
+        console.error("❌ download-server.js 파일 없음!");
+        return;
+    }
+
     serverProcess = spawn(process.execPath, [serverPath], {
-        cwd: basePath,
+        cwd: cwdPath,
         stdio: "inherit",
         windowsHide: false,
         env: {
             ...process.env,
             ELECTRON_RUN_AS_NODE: "1",
+            NODE_PATH: nodeModulesPath, // express 로드 위치 지정
             DOWNLOAD_DIR: downloadDir,
         },
     });
 
-    serverProcess.on("error", (err) => {
-        console.error("❌ SERVER SPAWN ERROR:", err);
-    });
+    serverProcess.stderr?.on("data", (data) =>
+        console.error("[SERVER STDERR]", data.toString())
+    );
 
-    serverProcess.stdout?.on("data", (data) => {
-        console.log("[SERVER STDOUT]", data.toString());
-    });
+    serverProcess.stdout?.on("data", (data) =>
+        console.log("[SERVER STDOUT]", data.toString())
+    );
 
-    serverProcess.stderr?.on("data", (data) => {
-        console.error("[SERVER STDERR]", data.toString());
-    });
-
-    serverProcess.on("exit", (code) => {
-        console.log("📡 download-server 종료:", code);
-    });
+    serverProcess.on("exit", (code) =>
+        console.log("📡 download-server 종료 code:", code)
+    );
 }
 
-// webview에서 미디어 감지
+/** ================================
+ * 🎯 webview 요청 후킹
+ * ================================= */
 ipcMain.on("register-webview", (event, webContentsId) => {
     const parent = event.sender;
     const wc = webContents.fromId(webContentsId);
 
     if (!wc) {
-        console.warn("⚠ webContents not found for id:", webContentsId);
+        console.warn("⚠ webContents not found:", webContentsId);
         return;
     }
 
     const ses = wc.session;
-    const filter = { urls: ["*://*/*"] };
 
-    console.log("🛰 webview session hook 등록");
+    console.log("🛰 webview network sniffing start");
 
-    ses.webRequest.onBeforeRequest(filter, (details, callback) => {
+    ses.webRequest.onBeforeRequest({ urls: ["*://*/*"] }, (details, cb) => {
         try {
-            const url = details.url;
-            const resourceType = details.resourceType;
-
-            if (isMediaUrl(url, resourceType)) {
+            if (isMediaUrl(details.url, details.resourceType)) {
                 parent.send("media-detected", {
-                    url,
-                    resourceType,
+                    url: details.url,
                     method: details.method,
+                    type: details.resourceType,
                 });
             }
-        } catch (err) {
-            console.error("webRequest handler error:", err);
+        } catch (e) {
+            console.error("webRequest error:", e);
         }
-        callback({ cancel: false });
+        cb({ cancel: false });
     });
 });
 
+/** ================================
+ * 🔥 앱 실행
+ * ================================= */
 app.whenReady().then(() => {
     startDownloadServer();
     createWindow();
 });
 
 app.on("window-all-closed", () => {
-    if (serverProcess) {
-        try {
-            serverProcess.kill();
-        } catch (e) {
-            console.warn("download-server kill 실패:", e);
-        }
-    }
+    if (serverProcess) serverProcess.kill();
     if (process.platform !== "darwin") app.quit();
 });
 
 app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-    }
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });

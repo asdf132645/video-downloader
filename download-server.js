@@ -1,11 +1,21 @@
+// 🚫 Node18 embedded fetch 관련 충돌 방지
+process.env.NODE_NO_HTTP_FETCH = "1";
+
+// 🚧 undici가 참조하는 Web API mock
+if (!global.File) global.File = class {};
+if (!global.Blob) global.Blob = class {};
+
 // download-server.js
-const express = require("express");
 const axios = require("axios");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { exec } = require("child_process");
 const { extractMediaCandidates, DIRECT_EXT, M3U8_EXT } = require("./htmlParser");
+
+
+const express = require("express");
+
 
 const basePath = (process.resourcesPath && !process.env.ELECTRON_RUN_AS_NODE)
     ? process.resourcesPath
